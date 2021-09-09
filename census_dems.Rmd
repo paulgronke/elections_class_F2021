@@ -1,0 +1,220 @@
+---
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+<!-- Script name: census_dems.Rmd
+
+Authors: Malen Cuturic and Paul Gronke, Reed College and EVIC
+Date: July 2021
+
+Purpose:
+========
+This script produces a quick table of demographic information for one or more states, 
+ using the tidycensus package to pull demographics from the American Community Survey (ACS) indicators,
+ and combining these with election administration data from the Election Administration and
+ Voting Survey (EAVS).
+ 
+Documentation for tidycensus is available at: https://walker-data.com/tidycensus/index.html 
+
+  1. There are 1000s of variables in the Census and ACS. To learn how to locate and identify the columns of
+    data that you wish to use, follow this link 
+    https://walker-data.com/tidycensus/articles/basic-usage.html#searching-for-variables-1
+    
+  2. The general structure of the data import and calculation used in this script is:
+  
+    white_prop <-                                                             (1)
+      get_acs(geography = 'county', variables = 'B03002_003', state = state,  (2)
+            year = year, summary_var = 'B01003_001') %>%   
+      arrange(desc(GEOID)) %>%                                                (3)
+      mutate(w_pct = estimate/summary_est) %>%                                (4)
+      select(GEOID, NAME, w_prop)                                             (5)
+
+      (1) Output data frame or vector
+
+      (2) The "get_acs" command identifies the Census product you are using (in this case, the
+      American Community Survey), the geography or level of analysis (county), 
+      the variable or variables we are pulling (B03002_003 = count of white residents), 
+      the year of the ACS we wish to use, and "summary_var" which is what we will use as a 
+      denominator to calculate the proportion (B01003_001 = total person count)
+
+      (3) Arranges (sorts) the data descending by GEOID, which is the Census identifier
+      for the "geography" unit that we are using. In this case, the GEOID = FIPS Code 
+
+      (4) Mutate calculates our estimate
+
+      (5) Final column selection of GEOID, NAME (the alphanumeric name of the county
+      and the full name of the state, e.g. "Autauga County, Alabama"), and our estimate for the proportion
+      of whites in the counties.   
+
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidycensus)    # Library to interface with the Census
+library(tidyverse)
+library(kableExtra)
+
+# Other Setup Parameters for this script
+
+  #
+  # CENSUS API 
+  #
+  # In order to pull Census data directly using tidycensus, users will need to obtain
+  # a API key. Tis key allows users to query the Census with minimal restrictions (50 variables
+  # per query and 500 queries per day).
+  #
+  # An API can be requested here: https://api.census.gov/data/key_signup.html
+  # 
+  # Documentation on API usage is provided here:
+  # https://www.census.gov/content/dam/Census/library/publications/2020/acs/acs_api_handbook_2020_ch02.pdf
+  #
+  # Documentation on attaching the API to your .Renviron file is here:
+  #     https://rdrr.io/cran/tidycensus/man/census_api_key.html
+
+
+## Run the first time you run this script: 
+#census_api_key("1111abcd", install = TRUE, overwrite = TRUE)
+## First time, reload your environment so you can use the key without restarting R.
+#readRenviron("~/.Renviron")
+## You can check it with:
+#Sys.getenv("CENSUS_API_KEY")
+
+
+census_api_key(Sys.getenv('CENSUS_API_KEY'))
+  
+# Select state and year for ACS data
+
+state <- 'Washington'  # Select state
+year <- 2018       # Year for ACS data
+
+
+```
+
+```{r import_eavs, include = FALSE}
+
+# EAVS Election Administration and Voting Survey 
+#
+# Biennial survey of election administration in the United States. Used in this script as
+# a source for voter registration totals. The EAVS is documented and data are available at
+# this link:  https://www.eac.gov/research-and-data/datasets-codebooks-and-surveys
+#
+# The location of the EAVS data files may change; the location above can be
+# accessed to confirm the file location.   
+
+# Codebooks and EAVS data in other formats (csv, Excel, SPSS, Stata) are also at this URL. 
+# Refer to this documentation to identify additional columns of data to be pulled from the EAVS 
+#
+
+eavs_link <- 'https://www.eac.gov/sites/default/files/Research/EAVS_2018_for_Public_Release_Updates3.csv' 
+ 
+# EAVS import and column selection
+
+temp <- tempfile(fileext = '.csv')
+download.file(eavs_link, destfile = temp)
+
+
+eavs <- read.csv(temp) %>%
+  filter(State_Full == toupper(state)) %>%  
+  select(FIPSCode, A1a) %>%
+  mutate(FIPSCode = FIPSCode/100000) %>% #chopping off some extra 0's
+  arrange(desc(FIPSCode)) %>%
+  rename(total_registered_voters = A1a) %>%
+  select(total_registered_voters)
+
+file.remove(temp)
+
+```
+
+```{r recodes, include = FALSE}
+
+# Additional recoding
+
+# Regional codings for Washington counties
+
+king <- c('King')
+nw <- c('Clallam', 'Island', 'Jefferson', 'Kitsap', 'San Juan', 'Skagit', 'Snohomish',
+        'Whatcom')
+sw <- c('Clark', 'Cowlitz', 'Grays Harbor', 'Klickitat', 'Lewis', 'Mason', 'Pacific',
+        'Pierce', 'Skamania', 'Thurston', 'Wahkiakum')
+eastern <- c('Adams', 'Asotin', 'Benton', 'Chelan', 'Columbia', 'Douglas', 'Ferry', 
+            'Franklin', 'Garfield', 'Grant', 'Kittitas', 'Lincoln', 'Okanogan', 
+            'Pend Oreille', 'Spokane', 'Stevens', 'Walla Walla', 'Whitman', 'Yakima')
+
+```
+
+```{r import_census, include = FALSE}
+
+# white proportion
+
+w_pct <- 
+  get_acs(geography = 'county', variables = 'B03002_003', state = state, 
+          year = year, summary_var = 'B01003_001') %>%   
+  arrange(desc(GEOID)) %>%
+  mutate(w_pct = estimate/summary_est) %>%  
+  select(GEOID, NAME, w_pct)
+
+#african american proportion
+
+aa_pct <- 
+  get_acs(geography = 'county', variables = 'B03002_004', state = state, 
+          year = year, summary_var = 'B01003_001') %>%
+  arrange(desc(GEOID)) %>%
+  mutate(aa_pct = estimate/summary_est) %>%
+  select(aa_pct)
+
+#native american proportion
+
+na_pct <- 
+  get_acs(geography = 'county', variables = 'B03002_005', state = state, 
+          year = year, summary_var = 'B01003_001') %>%
+  arrange(desc(GEOID)) %>%
+  mutate(na_pct = estimate/summary_est) %>%
+  select(na_pct)
+
+#hispanic or latino proportion
+
+hl_pct <- 
+  get_acs(geography = 'county', variables = 'B03001_003', state = state, 
+          year = year, summary_var = 'B01003_001') %>%
+  arrange(desc(GEOID)) %>%
+  mutate(hl_pct = estimate/summary_est) %>%
+  select(hl_pct)
+
+#concatenating and calculating the percentage of responses not covered by the categories above
+
+dem_pcts <- cbind(w_pct, aa_pct, na_pct, hl_pct, eavs) %>%
+  rowwise() %>%
+  mutate(other = 1 - (w_pct + aa_pct + na_pct + hl_pct)) %>%
+  mutate(NAME = strsplit(NAME, split = ' County')[[1]][1]) %>%
+  mutate(total_registered_voters = as.numeric(as.character(total_registered_voters))) %>%  #yikes
+  mutate(total_registered_voters = 
+           as.character(formatC(total_registered_voters, 'd', big.mark = ','))) %>%
+  mutate_if(is.numeric, ~sprintf("%.2f", .)) %>%
+  relocate(total_registered_voters, .after = other) %>%
+  select(!GEOID)
+
+#rm(w_pct, aa_pct, na_pct, hl_pct, eavs, king, sw, nw, easter)
+
+
+
+```
+
+```{r tables, echo = FALSE}
+
+# Produce the tables, organized alphabetically by county name
+
+dem_pcts <- arrange(dem_pcts, NAME)
+
+dem_pcts %>%
+  kbl(col.names = c('County', 'White %', 'AfA %', 'Nat %', 'Hisp %',
+                                      'Other %', 'Registered Voters'), 
+      align = 'lrrrrrrl', 
+      caption = "Washington State County Demographics and Registered Voters",      
+      longtable = TRUE) %>%
+  footnote(general = "Sources: Demographic estimates from the 2018 3-year ACS, Registered voters from the 2018 EAVS") %>% 
+  kable_styling()
+
+```
